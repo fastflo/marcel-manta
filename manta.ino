@@ -1,37 +1,43 @@
+/*
+  2024-04-03 initiale version ausm bunker
+  2024-04-04 klappen servo aus 5s nach letzter poti aenderrung
+*/
+
 // Klappensteuerung
-#define KLAPPEN_STEL_POTI A0 // SVP, ADC1_0  1280..4095
+#define KLAPPEN_STEL_POTI       A0 // SVP, ADC1_0  1280..4095
 #define KLAPPEN_STEL_POTI_MIN 1140
 #define KLAPPEN_STEL_POTI_MAX 4095
-#define KLAPPEN_SERVO     19 // P19
-#define KLAPPEN_SERVO_MIN 70 // 50 // 45 // 160 // 0
-#define KLAPPEN_SERVO_MAX 0 //160
+#define KLAPPEN_SERVO           19 // P19
+#define KLAPPEN_SERVO_MIN       70 // 50 // 45 // 160 // 0
+#define KLAPPEN_SERVO_MAX        0 //160
+#define KLAPPEN_SERVO_TIMEOUT    5 // kommando fuer 5s nach jeder aenderrung des STEL-poti's
 
-#define ZUENDUNG          23 // P23, KLEMME 13
-#define ZUENDUNG_IMMER_AN 0
+#define ZUENDUNG                23 // P23, KLEMME 13
+#define ZUENDUNG_IMMER_AN        0
 
 // Heizungssteuerung
-#define HEIZUNGS_INTERVAL  60 // 60 // 30 sekunden
-#define HEIZUNGS_TRIG      22 // P22
-#define HEIZUNGS_POTI      A6 // P34, ADC1_6
-#define HEIZUNGS_POTI_MIN 1140
-#define HEIZUNGS_POTI_MAX 4095
-#define HEIZUNGS_MAX      100 // 100 -> 100% heizung -> 0V die ganze zeit!
-#define HEIZUNGS_MIN        0 // 0 -> 0% heizung -> 3v3 die ganze zeit! -> ventil zieht strom!
+#define HEIZUNGS_INTERVAL       60 // 60 // 30 sekunden
+#define HEIZUNGS_TRIG           22 // pin P22
+#define HEIZUNGS_POTI           A6 // pin P34, ADC1_6
+#define HEIZUNGS_POTI_MIN     1140
+#define HEIZUNGS_POTI_MAX     4095
+#define HEIZUNGS_MAX           100 // 100 -> 100% heizung -> 0V die ganze zeit!
+#define HEIZUNGS_MIN             0 // 0 -> 0% heizung -> 3v3 die ganze zeit! -> ventil zieht strom!
 
-#define LED_LINKS          16 // P16
-#define LED_RECHTS         17 // P17
+#define LED_LINKS               16 // pin
+#define LED_RECHTS              17 // pin
 
-#define ZV_BLINK           18 // P18
-#define ZV                  5 // P5
+#define ZV_BLINK                18 // pin
+#define ZV                       5 // pin
 
-#define ZV_AUF_LED_TIME     10 // seconds
-#define ZV_ZU_LED_INTERVAL 400 // milliseconds
-#define ZV_ZU_LED_COUNT    3
+#define ZV_AUF_LED_TIME         10 // sekunden
+#define ZV_ZU_LED_INTERVAL     400 // millisekunden
+#define ZV_ZU_LED_COUNT          3 // pulse
 
-#define TEST_LED1         13 // P13
+#define TEST_LED1               13 // pin
 
-#define ADC_MIN 0
-#define ADC_MAX 4095
+#define ADC_MIN                  0
+#define ADC_MAX               4095
 
 #include <ESP32Servo.h>
 #define DEBUG
@@ -44,6 +50,10 @@
 #endif
 
 Servo klappen_servo;
+bool klappen_servo_on = false;
+uint32_t klappen_servo_start_time = 0;
+int last_servo_cmd = 0;
+
 bool zuendung_an = false;
 
 int heizungs_duty_cycle = HEIZUNGS_MAX;
@@ -131,12 +141,44 @@ void standby_led() {
       poti_prefix ## _MIN, poti_prefix ## _MAX, \
       out_prefix ## _MAX, out_prefix ## _MIN)
 
+void klappen_servo_aus() {
+	if(klappen_servo_on == false)
+		return;
+	klappen_servo.detach();
+	klappen_servo_on = false;
+	dbg_val(klappen_servo_on);
+}
+
 void klappensteuerung() {
-  int stel_poti = analogRead(KLAPPEN_STEL_POTI);
-  //dbg_val(stel_poti);
-  int servo_cmd = map_poti(stel_poti, KLAPPEN_STEL_POTI, KLAPPEN_SERVO);
-  klappen_servo.write(servo_cmd);
-  dbg_val(servo_cmd);
+	int stel_poti = analogRead(KLAPPEN_STEL_POTI);
+	//dbg_val(stel_poti);
+	int servo_cmd = map_poti(stel_poti, KLAPPEN_STEL_POTI, KLAPPEN_SERVO);
+
+	uint32_t now = millis();
+	if(servo_cmd != last_servo_cmd) {
+		last_servo_cmd = servo_cmd;
+		klappen_servo_start_time = now;
+	} else {
+		// no new command
+		if(klappen_servo_on) {
+			// check for timeout
+			uint32_t since_start = elapsed_since_u32(klappen_servo_start_time, now);
+			if (since_start > (1e3 * KLAPPEN_SERVO_TIMEOUT))
+				klappen_servo_aus();
+		}
+		if(!klappen_servo_on)
+			return;
+	}
+
+	// send new servo command!
+	if(klappen_servo_on == false) {
+		klappen_servo.attach(KLAPPEN_SERVO);
+		klappen_servo_on = true;
+		dbg_val(klappen_servo_on);
+	}
+
+	klappen_servo.write(servo_cmd);
+	//dbg_val(servo_cmd);
 }
 
 void heizungssteuerung() {
@@ -252,10 +294,11 @@ void loop() {
     dbg_val(zuendung_an);
     last_zuendung_an = zuendung_an;
     if(zuendung_an)
-      klappen_servo.attach(KLAPPEN_SERVO);
+	    klappen_servo_start_time = millis();
     else
-      klappen_servo.detach();
+	    klappen_servo_aus();
   }
+
   if(zuendung_an) {
     digitalWrite(TEST_LED1, true);
     //ledcWrite(0, 255); // status led full on
